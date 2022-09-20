@@ -9,7 +9,6 @@ import {
   OrderEdit,
   OrderEditItemChangeType,
   OrderEditStatus,
-  OrderItemChange,
 } from "../models"
 import { TransactionBaseService } from "../interfaces"
 import {
@@ -25,15 +24,20 @@ import {
   CreateOrderEditInput,
 } from "../types/order-edit"
 import { OrderItemChangeRepository } from "../repositories/order-item-change"
+import LineItemAdjustmentService from "./line-item-adjustment"
+import TaxProviderService from "./tax-provider"
 
 type InjectedDependencies = {
   manager: EntityManager
   orderEditRepository: typeof OrderEditRepository
   orderItemChangeRepository: typeof OrderItemChangeRepository
+
   orderService: OrderService
-  eventBusService: EventBusService
   totalsService: TotalsService
   lineItemService: LineItemService
+  eventBusService: EventBusService
+  taxProviderService: TaxProviderService
+  lineItemAdjustmentService: LineItemAdjustmentService
   orderEditItemChangeService: OrderEditItemChangeService
 }
 
@@ -52,8 +56,11 @@ export default class OrderEditService extends TransactionBaseService {
   protected readonly orderItemChangeRepository_: typeof OrderItemChangeRepository
 
   protected readonly orderService_: OrderService
+  protected readonly totalsService_: TotalsService
   protected readonly lineItemService_: LineItemService
   protected readonly eventBusService_: EventBusService
+  protected readonly taxProviderService_: TaxProviderService
+  protected readonly lineItemAdjustmentService_: LineItemAdjustmentService
   protected readonly totalsService_: TotalsService
   protected readonly orderEditItemChangeService_: OrderEditItemChangeService
 
@@ -66,6 +73,8 @@ export default class OrderEditService extends TransactionBaseService {
     eventBusService,
     totalsService,
     orderEditItemChangeService,
+    lineItemAdjustmentService,
+    taxProviderService,
   }: InjectedDependencies) {
     // eslint-disable-next-line prefer-rest-params
     super(arguments[0])
@@ -78,6 +87,8 @@ export default class OrderEditService extends TransactionBaseService {
     this.eventBusService_ = eventBusService
     this.totalsService_ = totalsService
     this.orderEditItemChangeService_ = orderEditItemChangeService
+    this.lineItemAdjustmentService_ = lineItemAdjustmentService
+    this.taxProviderService_ = taxProviderService
   }
 
   async retrieve(
@@ -412,7 +423,7 @@ export default class OrderEditService extends TransactionBaseService {
       )
 
       const orderEdit = await this.retrieve(orderEditId, {
-        relations: ["order", "changes"],
+        relations: ["order", "order.cart", "changes"],
       })
 
       const regionId = orderEdit.order.region_id
@@ -430,7 +441,25 @@ export default class OrderEditService extends TransactionBaseService {
 
       const lineItem = await lineItemServiceTx.create(newItem)
 
-      // 2. generate change record (with new line item)
+      // TODO: check quantity with inventory service `confirmInventory` ?
+
+      // 2. generate line item adjustments
+
+      await this.lineItemAdjustmentService_
+        .withTransaction(manager)
+        .createAdjustments(orderEdit.order.cart, lineItem)
+
+      // 3. generate tax lines
+
+      const calcContext = await this.totalsService_.getCalculationContext(
+        orderEdit.order
+      )
+
+      await this.taxProviderService_
+        .withTransaction(manager)
+        .createTaxLines([lineItem], calcContext)
+
+      // 4. generate change record (with new line item)
 
       const change = orderEditItemChangeRepo.create({
         type: OrderEditItemChangeType.ITEM_ADD,
