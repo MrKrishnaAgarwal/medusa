@@ -424,12 +424,15 @@ export default class OrderEditService extends TransactionBaseService {
         this.orderItemChangeRepository_
       )
 
-      const orderEditRepo = manager.getCustomRepository(
-        this.orderEditRepository_
-      )
-
       const orderEdit = await this.retrieve(orderEditId, {
-        relations: ["order", "order.cart", "order.region", "changes"],
+        relations: [
+          "order",
+          "order.cart",
+          "order.cart.discounts",
+          "order.cart.discounts.rule",
+          "order.region",
+          "changes",
+        ],
       })
 
       const regionId = orderEdit.order.region_id
@@ -480,7 +483,7 @@ export default class OrderEditService extends TransactionBaseService {
 
       await orderEditItemChangeRepo.save(change)
 
-      // return this.retrieve(orderEditId)
+      return this.retrieve(orderEditId)
     })
   }
 
