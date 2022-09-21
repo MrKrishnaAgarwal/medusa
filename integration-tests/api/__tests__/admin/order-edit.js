@@ -598,7 +598,7 @@ describe("[MEDUSA_FF_ORDER_EDITING] /admin/order-edits", () => {
       )
     })
 
-    it("cancels an already cancelled order edit", async () => {
+    it("cancels an already confirmed order edit", async () => {
       const api = useApi()
 
       try {
