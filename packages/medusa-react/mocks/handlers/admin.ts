@@ -1695,6 +1695,15 @@ export const adminHandlers = [
       })
     )
   }),
+  
+  rest.post("/admin/order-edits/:id/cancel", (req, res, ctx) => {
+    return res(
+      ctx.status(200),
+      ctx.json({
+        order_edit: { ...fixtures.get("order_edit"), canceled_at: new Date(), status: 'canceled' },
+      })
+    )
+  }),
 
   rest.delete("/admin/order-edits/:id", (req, res, ctx) => {
     const { id } = req.params
