@@ -1,10 +1,12 @@
 import { IdMap, MockManager, MockRepository } from "medusa-test-utils"
 import {
   EventBusService,
+  InventoryService,
   LineItemService,
   OrderEditItemChangeService,
   OrderEditService,
   OrderService,
+  TaxProviderService,
   TotalsService,
 } from "../index"
 import { OrderEditItemChangeType, OrderEditStatus } from "../../models"
@@ -13,6 +15,11 @@ import { EventBusServiceMock } from "../__mocks__/event-bus"
 import { LineItemServiceMock } from "../__mocks__/line-item"
 import { TotalsServiceMock } from "../__mocks__/totals"
 import { orderEditItemChangeServiceMock } from "../__mocks__/order-edit-item-change"
+import { InventoryServiceMock } from "../__mocks__/inventory"
+import LineItemAdjustmentService from "../line-item-adjustment"
+import { LineItemAdjustmentServiceMock } from "../__mocks__/line-item-adjustment"
+import { TaxProviderServiceMock } from "../__mocks__/tax-provider"
+import { OrderItemChangeRepository } from "../../repositories/order-item-change"
 
 const orderEditToUpdate = {
   id: IdMap.getId("order-edit-to-update"),
@@ -62,6 +69,21 @@ const orderEditWithChanges = {
     },
   ],
 }
+
+const orderEditWithAddedLineItem = {
+  id: IdMap.getId("order-edit-with-changes"),
+  order: {
+    id: IdMap.getId("order-edit-change"),
+    cart: {
+      discounts: [{ rule: {} }],
+    },
+    region: { id: IdMap.getId("test-region") },
+  },
+}
+
+const orderItemChangeRepositoryMock = MockRepository({
+  save: (f) => Promise.resolve(f),
+})
 
 const lineItemServiceMock = {
   ...LineItemServiceMock,
@@ -136,6 +158,11 @@ describe("OrderEditService", () => {
     lineItemService: lineItemServiceMock as unknown as LineItemService,
     orderEditItemChangeService:
       orderEditItemChangeServiceMock as unknown as OrderEditItemChangeService,
+    inventoryService: InventoryServiceMock as unknown as InventoryService,
+    lineItemAdjustmentService:
+      LineItemAdjustmentServiceMock as unknown as LineItemAdjustmentService,
+    orderItemChangeRepository: orderItemChangeRepositoryMock,
+    taxProviderService: TaxProviderServiceMock as unknown as TaxProviderService,
   })
 
   it("should retrieve an order edit and call the repository with the right arguments", async () => {
@@ -283,7 +310,7 @@ describe("OrderEditService", () => {
           requested_at: expect.any(Date),
           requested_by: userId,
         })
-        
+
         expect(EventBusServiceMock.emit).toHaveBeenCalledWith(
           OrderEditService.Events.REQUESTED,
           { id: orderEditId }
@@ -320,5 +347,20 @@ describe("OrderEditService", () => {
         expect(orderEditRepository.save).toHaveBeenCalledTimes(0)
       })
     })
+  })
+
+  it("should add a line item to an order edit", async () => {
+    await orderEditService.addLineItem(IdMap.getId("order-edit-with-changes"), {
+      variant_id: IdMap.getId("to-be-added-variant"),
+      quantity: 3,
+    })
+
+    expect(InventoryServiceMock.confirmInventory).toHaveBeenCalledTimes(1)
+    expect(LineItemServiceMock.generate).toHaveBeenCalledTimes(1)
+    expect(
+      LineItemAdjustmentServiceMock.createAdjustments
+    ).toHaveBeenCalledTimes(1)
+    expect(TaxProviderServiceMock.createTaxLines).toHaveBeenCalledTimes(1)
+    expect(orderItemChangeRepositoryMock.save).toHaveBeenCalledTimes(1)
   })
 })
