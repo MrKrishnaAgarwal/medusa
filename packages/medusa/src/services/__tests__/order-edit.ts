@@ -95,7 +95,20 @@ describe("OrderEditService", () => {
         return { ...orderEditWithChanges, status: OrderEditStatus.CONFIRMED }
       }
       if (query?.where?.id === IdMap.getId("declined-order-edit")) {
-        return { ...orderEditWithChanges, declined_reason: 'wrong size', status: OrderEditStatus.DECLINED }
+        return {
+          ...orderEditWithChanges,
+          declined_reason: "wrong size",
+          status: OrderEditStatus.DECLINED,
+        }
+      }
+      if (query?.where?.id === IdMap.getId("canceled-order-edit")) {
+        return { ...orderEditWithChanges, status: "canceled" }
+      }
+      if (query?.where?.id === IdMap.getId("confirmed-order-edit")) {
+        return { ...orderEditWithChanges, status: "confirmed" }
+      }
+      if (query?.where?.id === IdMap.getId("declined-order-edit")) {
+        return { ...orderEditWithChanges, status: "declined" }
       }
 
       return {}
@@ -217,19 +230,72 @@ describe("OrderEditService", () => {
       )
     })
     it("fails to decline an already declined order edit", async () => {
-        const result = await orderEditService.decline(IdMap.getId("declined-order-edit"), {
+      const result = await orderEditService.decline(
+        IdMap.getId("declined-order-edit"),
+        {
           declinedReason: "I requested a different color for the new product",
           loggedInUser: "admin_user",
-        })
+        }
+      )
 
-        expect(result).toEqual(
-          expect.objectContaining({
-            id: IdMap.getId("order-edit-with-changes"),
-            declined_at: expect.any(Date),
-            declined_reason: "wrong size",
-            declined_by: "admin_user",
-          })
-        )
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: IdMap.getId("order-edit-with-changes"),
+          declined_at: expect.any(Date),
+          declined_reason: "wrong size",
+          declined_by: "admin_user",
+        })
+      )
     })
+  })
+
+  describe("cancel", () => {
+    it("Cancels an order edit", async () => {
+      const id = IdMap.getId("order-edit-with-changes")
+      const userId = IdMap.getId("user-id")
+
+      await orderEditService.cancel(id, userId)
+
+      expect(orderEditRepository.save).toHaveBeenCalledWith({
+        ...orderEditWithChanges,
+        canceled_by: userId,
+        canceled_at: expect.any(Date),
+      })
+
+      expect(EventBusServiceMock.emit).toHaveBeenCalledTimes(1)
+      expect(EventBusServiceMock.emit).toHaveBeenCalledWith(
+        OrderEditService.Events.CANCELED,
+        { id }
+      )
+    })
+
+    it("Returns early in case of an already canceled order edit", async () => {
+      const id = IdMap.getId("canceled-order-edit")
+      const userId = IdMap.getId("user-id")
+
+      const result = await orderEditService.cancel(id, userId)
+
+      expect(result).toEqual(expect.objectContaining({ status: "canceled" }))
+
+      expect(orderEditRepository.save).toHaveBeenCalledTimes(0)
+      expect(EventBusServiceMock.emit).toHaveBeenCalledTimes(0)
+    })
+
+    test.each(["confirmed", "declined"])(
+      "Fails to cancel an edit with status %s",
+      async (status) => {
+        expect.assertions(1)
+        const id = IdMap.getId(`${status}-order-edit`)
+        const userId = IdMap.getId("user-id")
+
+        try {
+          await orderEditService.cancel(id, userId)
+        } catch (err) {
+          expect(err.message).toEqual(
+            `Cannot cancel order edit with status ${status}`
+          )
+        }
+      }
+    )
   })
 })

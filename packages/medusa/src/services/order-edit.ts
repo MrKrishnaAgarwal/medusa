@@ -34,6 +34,7 @@ export default class OrderEditService extends TransactionBaseService {
     CREATED: "order-edit.created",
     UPDATED: "order-edit.updated",
     DECLINED: "order-edit.declined",
+    CANCELED: "order-edit.canceled",
   }
 
   protected transactionManager_: EntityManager | undefined
@@ -381,5 +382,41 @@ export default class OrderEditService extends TransactionBaseService {
     orderEdit.total = totals.total
 
     return orderEdit
+  }
+
+  async cancel(orderEditId: string, userId: string): Promise<OrderEdit> {
+    return await this.atomicPhase_(async (manager) => {
+      const orderEditRepository = manager.getCustomRepository(
+        this.orderEditRepository_
+      )
+
+      const orderEdit = await this.retrieve(orderEditId)
+
+      if (orderEdit.status === OrderEditStatus.CANCELED) {
+        return orderEdit
+      }
+
+      if (
+        [OrderEditStatus.CONFIRMED, OrderEditStatus.DECLINED].includes(
+          orderEdit.status
+        )
+      ) {
+        throw new MedusaError(
+          MedusaError.Types.NOT_ALLOWED,
+          `Cannot cancel order edit with status ${orderEdit.status}`
+        )
+      }
+
+      orderEdit.canceled_at = new Date()
+      orderEdit.canceled_by = userId
+
+      const saved = await orderEditRepository.save(orderEdit)
+
+      await this.eventBusService_
+        .withTransaction(manager)
+        .emit(OrderEditService.Events.CANCELED, { id: orderEditId })
+
+      return saved
+    })
   }
 }
