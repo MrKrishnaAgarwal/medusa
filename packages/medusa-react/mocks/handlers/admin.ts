@@ -1737,12 +1737,14 @@ export const adminHandlers = [
     return res(
       ctx.status(200),
       ctx.json({
-        order_edit: fixtures.get("order_edit"),
-        changes: [
-          {
-            quantity: (req.body as any).quantity,
-          },
-        ],
+        order_edit: {
+          ...fixtures.get("order_edit"),
+          changes: [
+            {
+              quantity: (req.body as any).quantity,
+            },
+          ],
+        },
       })
     )
   }),
