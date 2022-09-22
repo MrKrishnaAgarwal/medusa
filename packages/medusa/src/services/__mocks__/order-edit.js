@@ -109,6 +109,9 @@ export const orderEditServiceMock = {
       requested_by: userId,
     })
   }),
+  updateLineItem: jest.fn().mockImplementation((_) => {
+    return Promise.resolve()
+  }),
 }
 
 const mock = jest.fn().mockImplementation(() => {

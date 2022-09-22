@@ -13,12 +13,16 @@ import {
 import { TransactionBaseService } from "../interfaces"
 import {
   EventBusService,
+  InventoryService,
   LineItemService,
   OrderEditItemChangeService,
   OrderService,
+  TaxProviderService,
   TotalsService,
 } from "./index"
 import { CreateOrderEditInput, UpdateOrderEditInput } from "../types/order-edit"
+import region from "./region"
+import LineItemAdjustmentService from "./line-item-adjustment"
 
 type InjectedDependencies = {
   manager: EntityManager
@@ -28,6 +32,9 @@ type InjectedDependencies = {
   totalsService: TotalsService
   lineItemService: LineItemService
   orderEditItemChangeService: OrderEditItemChangeService
+  inventoryService: InventoryService
+  lineItemAdjustmentService: LineItemAdjustmentService
+  taxProviderService: TaxProviderService
 }
 
 export default class OrderEditService extends TransactionBaseService {
@@ -46,6 +53,9 @@ export default class OrderEditService extends TransactionBaseService {
   protected readonly eventBusService_: EventBusService
   protected readonly totalsService_: TotalsService
   protected readonly orderEditItemChangeService_: OrderEditItemChangeService
+  protected readonly inventoryService_: InventoryService
+  protected readonly lineItemAdjustmentService_: LineItemAdjustmentService
+  protected readonly taxProviderService_: TaxProviderService
 
   constructor({
     manager,
@@ -55,6 +65,9 @@ export default class OrderEditService extends TransactionBaseService {
     eventBusService,
     totalsService,
     orderEditItemChangeService,
+    inventoryService,
+    lineItemAdjustmentService,
+    taxProviderService,
   }: InjectedDependencies) {
     // eslint-disable-next-line prefer-rest-params
     super(arguments[0])
@@ -66,6 +79,9 @@ export default class OrderEditService extends TransactionBaseService {
     this.eventBusService_ = eventBusService
     this.totalsService_ = totalsService
     this.orderEditItemChangeService_ = orderEditItemChangeService
+    this.inventoryService_ = inventoryService
+    this.lineItemAdjustmentService_ = lineItemAdjustmentService
+    this.taxProviderService_ = taxProviderService
   }
 
   async retrieve(
@@ -218,7 +234,13 @@ export default class OrderEditService extends TransactionBaseService {
           "shipping_methods.tax_lines",
         ],
       })
-    const { items } = await this.computeLineItems(orderEditId)
+    let { items } = await this.computeLineItems(orderEditId)
+
+    // For the purpose of the computation, we have to map the item id to the new item id instead of the original one for the correspondence of the tax lines and adjustments
+    items = items.map((item) => {
+      item.id = item.tax_lines[0]?.item_id ?? item.id
+      return item
+    })
     const computedOrder = { ...order, items } as Order
 
     const totalsServiceTx = this.totalsService_.withTransaction(manager)
@@ -370,6 +392,215 @@ export default class OrderEditService extends TransactionBaseService {
     })
   }
 
+  /**
+   * Create or update order edit item change line item and apply the quatity
+   * - If the item change already exists then update the quantity of the line item as well as the line adjustments and tax lines
+   * - If the item change does not exists then create the item change and cloned the original line item with the quantity as well as the line adjustments and tax lines
+   * @param orderEditId
+   * @param originalLineItemId
+   * @param data
+   */
+  async updateLineItem(
+    orderEditId: string,
+    originalLineItemId: string,
+    data: { quantity: number }
+  ): Promise<void> {
+    return await this.atomicPhase_(async (manager) => {
+      const orderEdit = await this.retrieve(orderEditId, {
+        select: [
+          "order_id",
+          "created_at",
+          "requested_at",
+          "confirmed_at",
+          "declined_at",
+          "canceled_at",
+        ],
+      })
+
+      const isOrderEditActive = OrderEditService.isOrderEditActive(orderEdit)
+      if (!isOrderEditActive) {
+        throw new MedusaError(
+          MedusaError.Types.NOT_ALLOWED,
+          `Can not update an item on the order edit ${orderEditId} with the status ${orderEdit.status}`
+        )
+      }
+
+      const originalLineItem = await this.lineItemService_
+        .withTransaction(manager)
+        .retrieve(originalLineItemId, { select: ["id", "order_id"] })
+
+      if (orderEdit.order_id !== originalLineItem.order_id) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `Invalid line item id ${originalLineItemId} it does not belong to the same order ${orderEdit.order_id} as the order edit.`
+        )
+      }
+
+      const orderEditItemChangeServiceTx =
+        this.orderEditItemChangeService_.withTransaction(manager)
+
+      let change = (
+        await orderEditItemChangeServiceTx.list(
+          {
+            original_line_item_id: originalLineItem.id,
+            type: OrderEditItemChangeType.ITEM_UPDATE,
+          },
+          {
+            relations: ["line_item", "original_line_item"],
+          }
+        )
+      ).pop()
+
+      if (!change) {
+        const newLineItem = await this.cloneOriginalLineItem(
+          originalLineItem.id,
+          orderEditId,
+          { quantity: data.quantity }
+        )
+        await orderEditItemChangeServiceTx.create({
+          type: OrderEditItemChangeType.ITEM_UPDATE,
+          order_edit_id: orderEditId,
+          original_line_item_id: originalLineItem.id,
+          line_item_id: newLineItem.id,
+        })
+        return
+      }
+
+      await this.updateClonedLineItem(change.line_item_id!, orderEditId, {
+        quantity: data.quantity,
+      })
+    })
+  }
+
+  protected async updateClonedLineItem(
+    lineItemId: string,
+    orderEditId: string,
+    data: { quantity: number }
+  ) {
+    const manager = this.transactionManager_ ?? this.manager_
+
+    const lineItemServiceTx = this.lineItemService_.withTransaction(manager)
+    const taxProviderServiceTx =
+      this.taxProviderService_.withTransaction(manager)
+    const lineItemAdjustmentServiceTx =
+      this.lineItemAdjustmentService_.withTransaction(manager)
+
+    const clonedLineItem = await lineItemServiceTx.retrieve(lineItemId, {
+      relations: ["variant"],
+    })
+    const orderEdit = await this.retrieve(orderEditId, {
+      relations: [
+        "order",
+        "order.cart",
+        "order.cart.customer",
+        "order.cart.discounts",
+        "order.cart.discounts.rule",
+        "order.cart.gift_cards",
+        "order.cart.region",
+        "order.cart.region.tax_rates",
+        "order.cart.shipping_address",
+        "order.cart.shipping_methods",
+        "order.region",
+      ],
+    })
+
+    const diffQuantity = data.quantity - clonedLineItem.fulfilled_quantity
+    if (diffQuantity > 0) {
+      await this.inventoryService_
+        .withTransaction(manager)
+        .confirmInventory(clonedLineItem.variant_id, diffQuantity)
+    }
+
+    await lineItemServiceTx.update(clonedLineItem.id, {
+      quantity: data.quantity,
+    })
+
+    await lineItemAdjustmentServiceTx.delete({
+      item_id: clonedLineItem.id,
+    })
+    await lineItemAdjustmentServiceTx.createAdjustments(
+      orderEdit.order.cart,
+      clonedLineItem
+    )
+
+    // Calculate context only on the current cloned item
+    orderEdit.order.items = [clonedLineItem]
+    const calcContext = await this.totalsService_
+      .withTransaction(manager)
+      .getCalculationContext(orderEdit.order, { exclude_shipping: true })
+
+    await taxProviderServiceTx.clearLineItemsTaxLines([clonedLineItem.id])
+    await taxProviderServiceTx.createTaxLines([clonedLineItem], calcContext)
+
+    return clonedLineItem
+  }
+
+  protected async cloneOriginalLineItem(
+    lineItemId: string,
+    orderEditId: string,
+    data: { quantity: number }
+  ): Promise<LineItem> {
+    const manager = this.transactionManager_ ?? this.manager_
+
+    const lineItemServiceTx = this.lineItemService_.withTransaction(manager)
+
+    const lineItem = await lineItemServiceTx.retrieve(lineItemId)
+    const orderEdit = await this.retrieve(orderEditId, {
+      relations: [
+        "order",
+        "order.cart",
+        "order.cart.customer",
+        "order.cart.discounts",
+        "order.cart.discounts.rule",
+        "order.cart.gift_cards",
+        "order.cart.region",
+        "order.cart.region.tax_rates",
+        "order.cart.shipping_address",
+        "order.cart.shipping_methods",
+        "order.region",
+      ],
+    })
+
+    const diffQuantity = data.quantity - lineItem.fulfilled_quantity
+    if (diffQuantity > 0) {
+      await this.inventoryService_
+        .withTransaction(manager)
+        .confirmInventory(lineItem.variant_id, diffQuantity)
+    }
+
+    const clonedLineItemData = {
+      ...lineItem,
+      id: undefined,
+      order_id: undefined,
+      cart_id: undefined,
+      quantity: data.quantity,
+      claim_order_id: undefined,
+      swap_id: undefined,
+    }
+    const { id: clonedLineItemId } = await lineItemServiceTx.create(
+      clonedLineItemData
+    )
+    const clonedLineItem = await lineItemServiceTx.retrieve(clonedLineItemId, {
+      relations: ["variant"],
+    })
+
+    await this.lineItemAdjustmentService_
+      .withTransaction(manager)
+      .createAdjustments(orderEdit.order.cart, clonedLineItem)
+
+    // Calculate context only on the current cloned item
+    orderEdit.order.items = [clonedLineItem]
+    const calcContext = await this.totalsService_
+      .withTransaction(manager)
+      .getCalculationContext(orderEdit.order, { exclude_shipping: true })
+
+    await this.taxProviderService_
+      .withTransaction(manager)
+      .createTaxLines([clonedLineItem], calcContext)
+
+    return clonedLineItem
+  }
+
   async decorateLineItemsAndTotals(orderEdit: OrderEdit): Promise<OrderEdit> {
     const lineItemDecoratedOrderEdit = await this.decorateLineItems(orderEdit)
     return await this.decorateTotals(lineItemDecoratedOrderEdit)
@@ -466,5 +697,13 @@ export default class OrderEditService extends TransactionBaseService {
 
       return orderEdit
     })
+  }
+
+  private static isOrderEditActive(orderEdit: OrderEdit): boolean {
+    return !(
+      orderEdit.status === OrderEditStatus.CONFIRMED ||
+      orderEdit.status === OrderEditStatus.CANCELED ||
+      orderEdit.status === OrderEditStatus.DECLINED
+    )
   }
 }

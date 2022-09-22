@@ -14,6 +14,7 @@ import {
 import { OrderEdit } from "../../../../models"
 import { AdminPostOrderEditsOrderEditReq } from "./update-order-edit"
 import { AdminPostOrderEditsReq } from "./create-order-edit"
+import { AdminPostOrderEditsEditLineItemsLineItemReq } from "./update-order-edit-line-item"
 
 const route = Router()
 
@@ -57,6 +58,13 @@ export default (app) => {
     "/:id/request",
     middlewares.wrap(require("./request-confirmation").default)
   )
+
+  route.post(
+    "/:id/items/:item_id",
+    transformBody(AdminPostOrderEditsEditLineItemsLineItemReq),
+    middlewares.wrap(require("./update-order-edit-line-item").default)
+  )
+
   return app
 }
 
@@ -71,4 +79,5 @@ export type AdminOrderEditItemChangeDeleteRes = {
 }
 
 export * from "./update-order-edit"
+export * from "./update-order-edit-line-item"
 export * from "./create-order-edit"

@@ -1,4 +1,4 @@
-import { OrderEdit } from "../models"
+import { OrderEdit, OrderEditItemChangeType } from "../models"
 
 export type UpdateOrderEditInput = {
   internal_note?: string
@@ -30,4 +30,11 @@ export const defaultOrderEditFields: (keyof OrderEdit)[] = [
 export type CreateOrderEditInput = {
   order_id: string
   internal_note?: string
+}
+
+export type CreateOrderEditItemChangeInput = {
+  type: OrderEditItemChangeType
+  order_edit_id: string
+  original_line_item_id?: string
+  line_item_id?: string
 }
