@@ -1,7 +1,8 @@
 import { EntityManager } from "typeorm"
+import { MedusaError } from "medusa-core-utils"
+
 import { FindConfig } from "../types/common"
 import { buildQuery, isDefined } from "../utils"
-import { MedusaError } from "medusa-core-utils"
 import { OrderEditRepository } from "../repositories/order-edit"
 import {
   LineItem,
@@ -18,10 +19,10 @@ import {
   OrderService,
   TotalsService,
 } from "./index"
-import { CreateOrderEditInput, UpdateOrderEditInput } from "../types/order-edit"
 import {
   AddOrderEditLineItemInput,
   CreateOrderEditInput,
+  UpdateOrderEditInput,
 } from "../types/order-edit"
 import { OrderItemChangeRepository } from "../repositories/order-item-change"
 import LineItemAdjustmentService from "./line-item-adjustment"
@@ -65,7 +66,6 @@ export default class OrderEditService extends TransactionBaseService {
   protected readonly inventoryService_: InventoryService
   protected readonly taxProviderService_: TaxProviderService
   protected readonly lineItemAdjustmentService_: LineItemAdjustmentService
-  protected readonly totalsService_: TotalsService
   protected readonly orderEditItemChangeService_: OrderEditItemChangeService
 
   constructor({

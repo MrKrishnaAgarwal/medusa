@@ -19,7 +19,6 @@ import { InventoryServiceMock } from "../__mocks__/inventory"
 import LineItemAdjustmentService from "../line-item-adjustment"
 import { LineItemAdjustmentServiceMock } from "../__mocks__/line-item-adjustment"
 import { TaxProviderServiceMock } from "../__mocks__/tax-provider"
-import { OrderItemChangeRepository } from "../../repositories/order-item-change"
 
 const orderEditToUpdate = {
   id: IdMap.getId("order-edit-to-update"),
@@ -294,7 +293,9 @@ describe("OrderEditService", () => {
       let result
 
       beforeEach(async () => {
-        result = await orderEditService.requestConfirmation(orderEditId, {loggedInUser: userId})
+        result = await orderEditService.requestConfirmation(orderEditId, {
+          loggedInUser: userId,
+        })
       })
 
       it("sets fields correctly for update", async () => {
@@ -316,7 +317,6 @@ describe("OrderEditService", () => {
           { id: orderEditId }
         )
       })
-
     })
 
     describe("requested edit", () => {
@@ -325,7 +325,9 @@ describe("OrderEditService", () => {
       let result
 
       beforeEach(async () => {
-        result = await orderEditService.requestConfirmation(orderEditId, {loggedInUser: userId})
+        result = await orderEditService.requestConfirmation(orderEditId, {
+          loggedInUser: userId,
+        })
       })
 
       afterEach(() => {
