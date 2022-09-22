@@ -80,10 +80,6 @@ const orderEditWithAddedLineItem = {
   },
 }
 
-const orderItemChangeRepositoryMock = MockRepository({
-  save: (f) => Promise.resolve(f),
-})
-
 const lineItemServiceMock = {
   ...LineItemServiceMock,
   list: jest.fn().mockImplementation(() => {
@@ -160,7 +156,6 @@ describe("OrderEditService", () => {
     inventoryService: InventoryServiceMock as unknown as InventoryService,
     lineItemAdjustmentService:
       LineItemAdjustmentServiceMock as unknown as LineItemAdjustmentService,
-    orderItemChangeRepository: orderItemChangeRepositoryMock,
     taxProviderService: TaxProviderServiceMock as unknown as TaxProviderService,
   })
 
@@ -363,6 +358,6 @@ describe("OrderEditService", () => {
       LineItemAdjustmentServiceMock.createAdjustments
     ).toHaveBeenCalledTimes(1)
     expect(TaxProviderServiceMock.createTaxLines).toHaveBeenCalledTimes(1)
-    expect(orderItemChangeRepositoryMock.save).toHaveBeenCalledTimes(1)
+    expect(orderEditItemChangeServiceMock.create).toHaveBeenCalledTimes(1)
   })
 })

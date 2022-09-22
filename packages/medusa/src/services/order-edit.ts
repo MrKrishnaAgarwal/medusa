@@ -24,7 +24,6 @@ import {
   CreateOrderEditInput,
   UpdateOrderEditInput,
 } from "../types/order-edit"
-import { OrderItemChangeRepository } from "../repositories/order-item-change"
 import LineItemAdjustmentService from "./line-item-adjustment"
 import TaxProviderService from "./tax-provider"
 import InventoryService from "./inventory"
@@ -32,7 +31,6 @@ import InventoryService from "./inventory"
 type InjectedDependencies = {
   manager: EntityManager
   orderEditRepository: typeof OrderEditRepository
-  orderItemChangeRepository: typeof OrderItemChangeRepository
 
   orderService: OrderService
   totalsService: TotalsService
@@ -57,7 +55,6 @@ export default class OrderEditService extends TransactionBaseService {
   protected transactionManager_: EntityManager | undefined
 
   protected readonly orderEditRepository_: typeof OrderEditRepository
-  protected readonly orderItemChangeRepository_: typeof OrderItemChangeRepository
 
   protected readonly orderService_: OrderService
   protected readonly totalsService_: TotalsService
@@ -71,7 +68,6 @@ export default class OrderEditService extends TransactionBaseService {
   constructor({
     manager,
     orderEditRepository,
-    orderItemChangeRepository,
     orderService,
     lineItemService,
     eventBusService,
@@ -86,7 +82,6 @@ export default class OrderEditService extends TransactionBaseService {
 
     this.manager_ = manager
     this.orderEditRepository_ = orderEditRepository
-    this.orderItemChangeRepository_ = orderItemChangeRepository
     this.orderService_ = orderService
     this.lineItemService_ = lineItemService
     this.eventBusService_ = eventBusService
@@ -421,10 +416,6 @@ export default class OrderEditService extends TransactionBaseService {
     return await this.atomicPhase_(async (manager) => {
       const lineItemServiceTx = this.lineItemService_.withTransaction(manager)
 
-      const orderEditItemChangeRepo = manager.getCustomRepository(
-        this.orderItemChangeRepository_
-      )
-
       const orderEdit = await this.retrieve(orderEditId, {
         relations: [
           "order",
@@ -490,13 +481,11 @@ export default class OrderEditService extends TransactionBaseService {
 
       // 4. generate change record (with new line item)
 
-      const itemChange = orderEditItemChangeRepo.create({
+      await this.orderEditItemChangeService_.create({
         type: OrderEditItemChangeType.ITEM_ADD,
         line_item_id: lineItem.id,
         order_edit_id: orderEditId,
       })
-
-      await orderEditItemChangeRepo.save(itemChange)
 
       await this.eventBusService_
         .withTransaction(manager)
