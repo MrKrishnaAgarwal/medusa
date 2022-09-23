@@ -4,6 +4,8 @@ import { buildQuery, isDefined } from "../utils"
 import { MedusaError } from "medusa-core-utils"
 import { OrderEditRepository } from "../repositories/order-edit"
 import {
+  Cart,
+  DiscountRuleType,
   LineItem,
   Order,
   OrderEdit,
@@ -457,18 +459,19 @@ export default class OrderEditService extends TransactionBaseService {
           originalLineItem.id,
           { quantity: data.quantity }
         )
-        await orderEditItemChangeServiceTx.create({
+        change = await orderEditItemChangeServiceTx.create({
           type: OrderEditItemChangeType.ITEM_UPDATE,
           order_edit_id: orderEditId,
           original_line_item_id: originalLineItem.id,
           line_item_id: newLineItem.id,
         })
-        return
+      } else {
+        await this.updateClonedLineItem(orderEditId, change.line_item_id!, {
+          quantity: data.quantity,
+        })
       }
 
-      await this.updateClonedLineItem(orderEditId, change.line_item_id!, {
-        quantity: data.quantity,
-      })
+      await this.refreshAdjustmentAndTaxLines(orderEditId, change.id)
     })
   }
 
@@ -492,13 +495,9 @@ export default class OrderEditService extends TransactionBaseService {
         .confirmInventory(clonedLineItem.variant_id, diffQuantity)
     }
 
-    clonedLineItem = await lineItemServiceTx.update(clonedLineItem.id, {
+    return await lineItemServiceTx.update(clonedLineItem.id, {
       quantity: data.quantity,
     })
-
-    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItem.id)
-
-    return clonedLineItem
   }
 
   protected async cloneOriginalLineItem(
@@ -528,60 +527,97 @@ export default class OrderEditService extends TransactionBaseService {
       claim_order_id: undefined,
       swap_id: undefined,
     }
-    const clonedLineItem = await lineItemServiceTx.create(clonedLineItemData)
-
-    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItem.id)
-
-    return clonedLineItem
+    return await lineItemServiceTx.create(clonedLineItemData)
   }
 
   protected async refreshAdjustmentAndTaxLines(
     orderEditId: string,
-    lineItemId: string
+    itemChangeId: string
   ): Promise<void> {
     const manager = this.transactionManager_ ?? this.manager_
+
+    const lineItemAdjustmentServiceTx =
+      this.lineItemAdjustmentService_.withTransaction(manager)
+    const taxProviderServiceTx =
+      this.taxProviderService_.withTransaction(manager)
 
     const orderEdit = await this.retrieve(orderEditId, {
       relations: [
         "order",
-        "order.cart",
-        "order.cart.customer",
-        "order.cart.discounts",
-        "order.cart.discounts.rule",
-        "order.cart.gift_cards",
-        "order.cart.region",
-        "order.cart.region.tax_rates",
-        "order.cart.shipping_address",
-        "order.cart.shipping_methods",
+        "order.items",
+        "order.customer",
+        "order.discounts",
+        "order.discounts.rule",
+        "order.gift_cards",
         "order.region",
+        "order.shipping_address",
+        "order.shipping_methods",
       ],
     })
-    const lineItem = await this.lineItemService_
+    const itemChange = await this.orderEditItemChangeService_
       .withTransaction(manager)
-      .retrieve(lineItemId)
+      .retrieve(itemChangeId, {
+        relations: [
+          "original_line_item",
+          "original_line_item.adjustments",
+          "line_item",
+        ],
+      })
 
-    const lineItemAdjustmentServiceTx =
-      this.lineItemAdjustmentService_.withTransaction(manager)
+    if (!itemChange.line_item) {
+      return
+    }
+
+    // Map the item ids to the same as there tax lines if any to compensate that the id correspond to the original one
+    let { items } = await this.computeLineItems(orderEditId)
+    items = items.map((item) => {
+      item.id = item.tax_lines[0]?.item_id ?? item.id
+      return item
+    })
 
     await lineItemAdjustmentServiceTx.delete({
-      item_id: lineItem.id,
+      item_id: itemChange.line_item_id,
     })
-    await lineItemAdjustmentServiceTx.createAdjustments(
-      orderEdit.order.cart,
-      lineItem
+    await taxProviderServiceTx.clearLineItemsTaxLines([
+      itemChange.line_item_id!,
+    ])
+
+    // Only take into consideration percentage discount as they are the only one that we want to keep applying on the changes
+    const percentageDiscounts = orderEdit.order.discounts?.filter(
+      (discount) => discount.rule.type === DiscountRuleType.PERCENTAGE
     )
 
-    // Calculate context only on the current given line item
-    orderEdit.order.items = [lineItem]
+    const localOrderCloned = {
+      ...orderEdit.order,
+      discounts: percentageDiscounts,
+      items,
+    } as Order
+
+    // For item_update, Clone the adjustment from the original line item to the new line item since the adjustments won't change in that case
+    if (!percentageDiscounts.length && itemChange.original_line_item) {
+      const adjustments = itemChange.original_line_item.adjustments ?? []
+      await Promise.all([
+        adjustments.map((adjustment) => {
+          lineItemAdjustmentServiceTx.create({
+            ...adjustment,
+            item_id: itemChange.line_item_id,
+          })
+        }),
+      ])
+    } else {
+      await lineItemAdjustmentServiceTx.createAdjustments(
+        localOrderCloned as unknown as Cart,
+        itemChange.line_item
+      )
+    }
+
     const calcContext = await this.totalsService_
       .withTransaction(manager)
-      .getCalculationContext(orderEdit.order, { exclude_shipping: true })
-
-    const taxProviderServiceTx =
-      this.taxProviderService_.withTransaction(manager)
-
-    await taxProviderServiceTx.clearLineItemsTaxLines([lineItem.id])
-    await taxProviderServiceTx.createTaxLines([lineItem], calcContext)
+      .getCalculationContext(localOrderCloned, { exclude_shipping: true })
+    await taxProviderServiceTx.createTaxLines(
+      [itemChange.line_item],
+      calcContext
+    )
   }
 
   async decorateLineItemsAndTotals(orderEdit: OrderEdit): Promise<OrderEdit> {
