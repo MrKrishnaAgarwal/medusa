@@ -453,8 +453,8 @@ export default class OrderEditService extends TransactionBaseService {
 
       if (!change) {
         const newLineItem = await this.cloneOriginalLineItem(
-          originalLineItem.id,
           orderEditId,
+          originalLineItem.id,
           { quantity: data.quantity }
         )
         await orderEditItemChangeServiceTx.create({
@@ -466,42 +466,23 @@ export default class OrderEditService extends TransactionBaseService {
         return
       }
 
-      await this.updateClonedLineItem(change.line_item_id!, orderEditId, {
+      await this.updateClonedLineItem(orderEditId, change.line_item_id!, {
         quantity: data.quantity,
       })
     })
   }
 
   protected async updateClonedLineItem(
-    lineItemId: string,
     orderEditId: string,
+    lineItemId: string,
     data: { quantity: number }
   ) {
     const manager = this.transactionManager_ ?? this.manager_
 
     const lineItemServiceTx = this.lineItemService_.withTransaction(manager)
-    const taxProviderServiceTx =
-      this.taxProviderService_.withTransaction(manager)
-    const lineItemAdjustmentServiceTx =
-      this.lineItemAdjustmentService_.withTransaction(manager)
 
-    const clonedLineItem = await lineItemServiceTx.retrieve(lineItemId, {
+    let clonedLineItem = await lineItemServiceTx.retrieve(lineItemId, {
       relations: ["variant"],
-    })
-    const orderEdit = await this.retrieve(orderEditId, {
-      relations: [
-        "order",
-        "order.cart",
-        "order.cart.customer",
-        "order.cart.discounts",
-        "order.cart.discounts.rule",
-        "order.cart.gift_cards",
-        "order.cart.region",
-        "order.cart.region.tax_rates",
-        "order.cart.shipping_address",
-        "order.cart.shipping_methods",
-        "order.region",
-      ],
     })
 
     const diffQuantity = data.quantity - clonedLineItem.fulfilled_quantity
@@ -511,33 +492,18 @@ export default class OrderEditService extends TransactionBaseService {
         .confirmInventory(clonedLineItem.variant_id, diffQuantity)
     }
 
-    await lineItemServiceTx.update(clonedLineItem.id, {
+    clonedLineItem = await lineItemServiceTx.update(clonedLineItem.id, {
       quantity: data.quantity,
     })
 
-    await lineItemAdjustmentServiceTx.delete({
-      item_id: clonedLineItem.id,
-    })
-    await lineItemAdjustmentServiceTx.createAdjustments(
-      orderEdit.order.cart,
-      clonedLineItem
-    )
-
-    // Calculate context only on the current cloned item
-    orderEdit.order.items = [clonedLineItem]
-    const calcContext = await this.totalsService_
-      .withTransaction(manager)
-      .getCalculationContext(orderEdit.order, { exclude_shipping: true })
-
-    await taxProviderServiceTx.clearLineItemsTaxLines([clonedLineItem.id])
-    await taxProviderServiceTx.createTaxLines([clonedLineItem], calcContext)
+    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItem.id)
 
     return clonedLineItem
   }
 
   protected async cloneOriginalLineItem(
-    lineItemId: string,
     orderEditId: string,
+    lineItemId: string,
     data: { quantity: number }
   ): Promise<LineItem> {
     const manager = this.transactionManager_ ?? this.manager_
@@ -545,21 +511,6 @@ export default class OrderEditService extends TransactionBaseService {
     const lineItemServiceTx = this.lineItemService_.withTransaction(manager)
 
     const lineItem = await lineItemServiceTx.retrieve(lineItemId)
-    const orderEdit = await this.retrieve(orderEditId, {
-      relations: [
-        "order",
-        "order.cart",
-        "order.cart.customer",
-        "order.cart.discounts",
-        "order.cart.discounts.rule",
-        "order.cart.gift_cards",
-        "order.cart.region",
-        "order.cart.region.tax_rates",
-        "order.cart.shipping_address",
-        "order.cart.shipping_methods",
-        "order.region",
-      ],
-    })
 
     const diffQuantity = data.quantity - lineItem.fulfilled_quantity
     if (diffQuantity > 0) {
@@ -584,21 +535,58 @@ export default class OrderEditService extends TransactionBaseService {
       relations: ["variant"],
     })
 
-    await this.lineItemAdjustmentService_
-      .withTransaction(manager)
-      .createAdjustments(orderEdit.order.cart, clonedLineItem)
+    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItemId)
 
-    // Calculate context only on the current cloned item
-    orderEdit.order.items = [clonedLineItem]
+    return clonedLineItem
+  }
+
+  protected async refreshAdjustmentAndTaxLines(
+    orderEditId: string,
+    lineItemId: string
+  ): Promise<void> {
+    const manager = this.transactionManager_ ?? this.manager_
+
+    const orderEdit = await this.retrieve(orderEditId, {
+      relations: [
+        "order",
+        "order.cart",
+        "order.cart.customer",
+        "order.cart.discounts",
+        "order.cart.discounts.rule",
+        "order.cart.gift_cards",
+        "order.cart.region",
+        "order.cart.region.tax_rates",
+        "order.cart.shipping_address",
+        "order.cart.shipping_methods",
+        "order.region",
+      ],
+    })
+    const lineItem = await this.lineItemService_
+      .withTransaction(manager)
+      .retrieve(lineItemId)
+
+    const lineItemAdjustmentServiceTx =
+      this.lineItemAdjustmentService_.withTransaction(manager)
+
+    await lineItemAdjustmentServiceTx.delete({
+      item_id: lineItem.id,
+    })
+    await lineItemAdjustmentServiceTx.createAdjustments(
+      orderEdit.order.cart,
+      lineItem
+    )
+
+    // Calculate context only on the current given line item
+    orderEdit.order.items = [lineItem]
     const calcContext = await this.totalsService_
       .withTransaction(manager)
       .getCalculationContext(orderEdit.order, { exclude_shipping: true })
 
-    await this.taxProviderService_
-      .withTransaction(manager)
-      .createTaxLines([clonedLineItem], calcContext)
+    const taxProviderServiceTx =
+      this.taxProviderService_.withTransaction(manager)
 
-    return clonedLineItem
+    await taxProviderServiceTx.clearLineItemsTaxLines([lineItem.id])
+    await taxProviderServiceTx.createTaxLines([lineItem], calcContext)
   }
 
   async decorateLineItemsAndTotals(orderEdit: OrderEdit): Promise<OrderEdit> {
