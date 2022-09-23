@@ -528,14 +528,9 @@ export default class OrderEditService extends TransactionBaseService {
       claim_order_id: undefined,
       swap_id: undefined,
     }
-    const { id: clonedLineItemId } = await lineItemServiceTx.create(
-      clonedLineItemData
-    )
-    const clonedLineItem = await lineItemServiceTx.retrieve(clonedLineItemId, {
-      relations: ["variant"],
-    })
+    const clonedLineItem = await lineItemServiceTx.create(clonedLineItemData)
 
-    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItemId)
+    await this.refreshAdjustmentAndTaxLines(orderEditId, clonedLineItem.id)
 
     return clonedLineItem
   }
